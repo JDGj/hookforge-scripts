@@ -61,14 +61,28 @@ SKIP_TEXT = {"script", "style", "noscript", "template"}
 # ------------------------------------------------------------------- a DOM --
 
 class Node:
-    __slots__ = ("tag", "attrs", "children", "parent", "text")
+    """One element. `children` holds child Nodes AND text, in document order.
+
+    One list and not two. They used to be separate -- `text` for this node's
+    own strings, `children` for elements -- and that loses the interleaving:
+    "um <b>dois</b> tres" came back as "um tres dois", because every string
+    was emitted before every child. A scraper that silently reorders the words
+    inside a value is worse than one that fails, and the bug was invisible
+    until the traversal was rewritten.
+    """
+
+    __slots__ = ("tag", "attrs", "children", "parent")
 
     def __init__(self, tag, attrs=None, parent=None):
         self.tag = tag
         self.attrs = attrs or {}
         self.children = []
         self.parent = parent
-        self.text = []
+
+    @property
+    def elements(self):
+        """Only the child elements. Most callers mean this, not the text."""
+        return [c for c in self.children if isinstance(c, Node)]
 
     # -- reading ---------------------------------------------------------
     @property
@@ -76,19 +90,39 @@ class Node:
         return set(self.attrs.get("class", "").split())
 
     def walk(self):
-        yield self
-        for c in self.children:
-            yield from c.walk()
+        """Every node under this one, document order. Iterative, not recursive.
+
+        Recursion here raised RecursionError on HTML nested a few thousand
+        deep -- which a hostile page can be trivially, and a generated one can
+        be by accident. A scraper that crashes on the page it was pointed at
+        is a scraper that cannot be left running.
+        """
+        stack = [self]
+        while stack:
+            node = stack.pop()
+            yield node
+            stack.extend(reversed(node.elements))
 
     def inner_text(self):
         """Visible text, whitespace collapsed. Script and style excluded --
-        otherwise a price selector happily returns a jQuery snippet."""
-        if self.tag in SKIP_TEXT:
-            return ""
-        parts = list(self.text)
-        for c in self.children:
-            parts.append(c.inner_text())
-        return re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip()
+        otherwise a price selector happily returns a jQuery snippet.
+
+        Iterative for the same reason as walk(), and it has to rebuild
+        document order by hand because a stack reverses it.
+        """
+        parts, stack = [], [self]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, str):
+                parts.append(node)
+                continue
+            if node.tag in SKIP_TEXT:
+                continue
+            # Pushed in reverse so they come back off the stack in document
+            # order -- text and elements interleaved exactly as written.
+            stack.extend(reversed(node.children))
+        flat = " ".join(p for p in parts if isinstance(p, str) and p)
+        return re.sub(r"\s+", " ", flat).strip()
 
     def signature(self):
         """What this node's shape is, for grouping siblings.
@@ -140,7 +174,7 @@ class Builder(HTMLParser):
 
     def handle_data(self, data):
         if data.strip():
-            self.cur.text.append(data)
+            self.cur.children.append(data)
 
 
 def parse(markup):
@@ -212,10 +246,10 @@ def find_repeats(root, min_items=3):
     """
     best, best_score = [], 0.0
     for node in root.walk():
-        if len(node.children) < min_items:
+        if len(node.elements) < min_items:
             continue
         groups = {}
-        for c in node.children:
+        for c in node.elements:
             groups.setdefault(c.signature(), []).append(c)
         for group in groups.values():
             if len(group) < min_items:
@@ -259,7 +293,7 @@ def find_repeats(root, min_items=3):
             link_factor = 1 + 0.6 * (linked / len(group))
             tags = len({d.tag for c in group for d in c.walk() if d is not c})
             structure = min(tags, 6) / 3.0
-            kids = sorted(len(c.children) for c in group)[len(group) // 2]
+            kids = sorted(len(c.elements) for c in group)[len(group) // 2]
             fields = 1.0 if kids >= 2 else (0.7 if kids == 1 else 0.35)
             score = (len(group) * min(mean, 600.0) ** 0.5 * uniformity ** 2
                      * (1 + node.depth() * 0.3) * link_factor * structure
@@ -516,7 +550,7 @@ def looks_like_records(markup, args):
     items = find_repeats(parse(markup), args.min_items)
     if not items:
         return True
-    return sorted(len(c.children) for c in items)[len(items) // 2] >= 1
+    return sorted(len(c.elements) for c in items)[len(items) // 2] >= 1
 
 
 def main(argv=None):
@@ -597,12 +631,12 @@ def selftest():
     root = parse(SHOP)
 
     # The DOM is a DOM, not a regex: attribute order is irrelevant.
-    a = parse('<a class="x" href="y">t</a>').children[0]
-    b = parse('<a href="y" class="x">t</a>').children[0]
+    a = parse('<a class="x" href="y">t</a>').elements[0]
+    b = parse('<a href="y" class="x">t</a>').elements[0]
     assert a.attrs == b.attrs and a.classes == b.classes == {"x"}
 
     # Void elements do not swallow the document.
-    assert len(parse("<div><br><p>a</p></div>").children[0].children) == 2
+    assert len(parse("<div><br><p>a</p></div>").elements[0].elements) == 2
     # Nor does a stray closing tag.
     assert parse("<div><p>a</p></div></div><p>b</p>").inner_text() == "a b"
 
@@ -612,6 +646,23 @@ def selftest():
     assert len(select(root, "div.product")) == 3
     assert select(root, "h3.title")[0].inner_text() == "Alpha"
     assert select(root, "#nao-existe") == []
+
+    # Text and elements come back interleaved, in the order they were written.
+    # They used to live in two lists and every string was emitted before every
+    # child, so "um <b>dois</b> tres" read as "um tres dois" -- a scraper
+    # silently reordering the words inside a value, which is worse than one
+    # that fails. Invisible until the traversal was rewritten for depth.
+    assert parse("<p>um <b>dois</b> tres <i>quatro</i> cinco</p>").inner_text() \
+        == "um dois tres quatro cinco"
+    assert parse("<div>A<span>B</span>C<span>D</span>E</div>").inner_text() == "A B C D E"
+    assert parse("<p><b>so</b> no fim</p>").inner_text() == "so no fim"
+
+    # And the traversal is iterative, so depth is not a limit. Recursion here
+    # raised RecursionError at a few thousand levels, which a hostile page
+    # reaches trivially and a generated one reaches by accident.
+    fundo = parse("<div>" * 20000 + "texto" + "</div>" * 20000)
+    assert sum(1 for _ in fundo.walk()) == 20001
+    assert fundo.inner_text() == "texto"
 
     # Script text is never content.
     assert "nao sou um preco" not in root.inner_text()

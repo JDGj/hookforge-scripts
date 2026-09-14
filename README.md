@@ -141,6 +141,19 @@ in `--selftest` cover the traps that file did not contain.
 `python3 csvclean.py --help` for the rest. `python3 csvclean.py --selftest`
 runs the test suite — no network, no files, about a second.
 
+### Hostile input
+
+These files arrive as attachments from strangers, which is the whole threat
+model. A `.xlsx` is a zip, and a zip can be a couple of hundred kilobytes on
+disk that decompresses into gigabytes of memory. The declared uncompressed
+size is in the zip directory, so it is read *before* anything is
+decompressed — a member over 256 MB, or compressing better than 500×, is
+refused by name. (The real Microsoft workbook we test against compresses 6×,
+so the limit has about 80× of headroom over anything genuine.)
+
+Entity expansion is not a worry here: `xml.etree` refuses both the billion
+laughs and external entities, which we checked rather than assumed.
+
 ### What it deliberately does not do
 
 - **Excel files with formatting, formulas or macros.** `.xlsx` is read (see
@@ -256,6 +269,14 @@ is text, and that one number separates them where nothing else does. It is a
 penalty and not a veto, because `<li>Alpha</li><li>Beta</li>` is a list too.
 
 **One request at a time, with a delay** (`--delay`, default 1s).
+
+**Depth is not a limit, and text keeps its order.** The tree is walked
+iteratively: recursion raised `RecursionError` on HTML a few thousand levels
+deep, which a hostile page reaches trivially and a generated one reaches by
+accident. Rewriting that exposed an older bug — text and child elements lived
+in two separate lists, so `um <b>dois</b> tres` came back as `um tres dois`. A
+scraper that silently reorders the words inside a value is worse than one that
+crashes. One ordered list now, and both are regression-tested.
 
 ### What it deliberately does not do
 

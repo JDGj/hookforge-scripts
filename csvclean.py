@@ -231,11 +231,38 @@ def xlsx_serial_to_text(serial):
     return when.strftime("%Y-%m-%d" if not frac else "%Y-%m-%d %H:%M:%S")
 
 
+# A spreadsheet is a zip, and a zip can be a bomb: a couple of hundred
+# kilobytes on disk that decompresses into gigabytes of memory. These files
+# arrive as attachments from strangers, which is the entire threat model.
+#
+# The declared uncompressed size is in the zip directory, so it can be read
+# BEFORE a single byte is decompressed -- refusing on it costs nothing and the
+# alternative is the process being killed with no explanation.
+XLSX_MAX_UNCOMPRESSED = 256 * 1024 * 1024
+XLSX_MAX_RATIO = 500
+
+
+def xlsx_bomb(info):
+    """Why this zip member must not be decompressed, or None."""
+    if info.file_size > XLSX_MAX_UNCOMPRESSED:
+        return (f"{info.filename} descomprime para "
+                f"{info.file_size / 1048576:.0f} MB (limite "
+                f"{XLSX_MAX_UNCOMPRESSED // 1048576} MB)")
+    if info.compress_size and info.file_size / info.compress_size > XLSX_MAX_RATIO:
+        return (f"{info.filename} tem racio de compressao "
+                f"{info.file_size / info.compress_size:.0f}x "
+                f"(limite {XLSX_MAX_RATIO}x) — parece uma zip bomb")
+    return None
+
+
 def read_xlsx(path, sheet=0):
     """(header, rows) from an .xlsx. Every value comes back as a string."""
     import xml.etree.ElementTree as ET
     import zipfile
     with zipfile.ZipFile(path) as zf:
+        for info in zf.infolist():
+            if why := xlsx_bomb(info):
+                raise SystemExit(f"{path}: recusado — {why}")
         names = [n for n in zf.namelist()
                  if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")]
         if not names:
