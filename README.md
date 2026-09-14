@@ -1,5 +1,7 @@
 # hookforge-scripts
 
+[![tests](https://github.com/JDGj/hookforge-scripts/actions/workflows/test.yml/badge.svg)](https://github.com/JDGj/hookforge-scripts/actions/workflows/test.yml)
+
 Small Python scripts for the data chores that are too fiddly to do by hand and
 too small to justify a library. **No dependencies** — Python 3.9+ and the
 standard library, nothing else. One file each. Public domain.

@@ -1,0 +1,50 @@
+name: tests
+
+# Every script here carries its own test suite in a --selftest flag: no
+# pytest, no fixtures directory, no network. This runs all of them on every
+# push, on the oldest Python the README promises and the newest that exists.
+#
+# The oldest matters more than it looks. The README says "Python 3.9+" and the
+# scripts were written on 3.13; a claim nobody tested is a claim that is true
+# by accident. If 3.9 breaks here, either the code gets fixed or the README
+# stops promising it -- but it stops being a guess either way.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false        # a break on 3.9 must not hide a break on 3.13
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    name: selftest (py${{ matrix.python }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: No dependencies, and that is the point
+        run: |
+          python -c "import sys; print(sys.version)"
+          test ! -f requirements.txt || (echo "this repo must stay dependency-free" && exit 1)
+      - name: csvclean
+        run: python csvclean.py --selftest
+      - name: listscrape
+        run: python listscrape.py --selftest
+      - name: hookbridge
+        run: python hookbridge.py --selftest
+      - name: Every script answers --help
+        run: |
+          for f in csvclean.py listscrape.py hookbridge.py; do
+            python "$f" --help > /dev/null || exit 1
+          done
+      - name: A published script must compile, not merely run its own tests
+        run: python -m compileall -q csvclean.py listscrape.py hookbridge.py
