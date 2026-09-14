@@ -46,5 +46,9 @@ jobs:
           for f in csvclean.py listscrape.py hookbridge.py; do
             python "$f" --help > /dev/null || exit 1
           done
+      - name: The README must still describe the scripts
+        run: |
+          python check_readme.py --selftest
+          python check_readme.py --offline
       - name: A published script must compile, not merely run its own tests
         run: python -m compileall -q csvclean.py listscrape.py hookbridge.py

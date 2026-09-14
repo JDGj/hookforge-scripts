@@ -306,6 +306,28 @@ interface it warns you, loudly, that you have built somebody else's free relay.
 
 `GET /health` returns pending, failed, delivered and dropped counts.
 
+### Everything it does
+
+| Flag | What it does |
+|---|---|
+| `--listen PORT` | Port to receive on (default 8080) |
+| `--bind ADDR` | Interface; default `127.0.0.1`, use `0.0.0.0` behind a proxy |
+| `--forward URL` | Where to send each event |
+| `--map FROM=TO` | Move a field; dotted paths; repeatable |
+| `--keep-unmapped` | Pass through the fields no `--map` mentions |
+| `--secret-env VAR` | Name of the env var holding the HMAC secret |
+| `--signature-header H` | Which header carries it (default `X-Hub-Signature-256`) |
+| `--forward-header H` | A header to pass on to the target; repeatable |
+| `--allow-non-json` | Accept non-JSON bodies, wrapped as `{"raw": "..."}` |
+| `--queue DIR` | Where the queue lives (default `./hookbridge-queue`) |
+| `--max-tries N` | Attempts before an event moves to `failed/` (default 6) |
+| `--replay` | Put everything in `failed/` back in the queue, and exit |
+| `--status` | Count the queue and exit |
+
+`python3 hookbridge.py --help` is the authority; this table is a summary and
+`check_readme.py` fails the build if it ever names a flag that no longer
+exists.
+
 ### What it deliberately does not do
 
 - **Authenticate to the target.** `--forward-header` passes headers through,
