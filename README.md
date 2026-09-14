@@ -13,6 +13,7 @@ python3 csvclean.py messy.csv --report
 |---|---|
 | [`csvclean.py`](#csvcleanpy) | Clean a messy CSV or Excel export |
 | [`listscrape.py`](#listscrapepy) | Pull a repeated list off a page into CSV |
+| [`hookbridge.py`](#hookbridgepy) | Receive a webhook, reshape it, forward it without losing it |
 
 ---
 
@@ -199,10 +200,80 @@ depth of position are what actually distinguish a list.
 
 ---
 
-## Coming next
+## hookbridge.py
 
-- `hookbridge.py` — receive a webhook and forward it somewhere else, with
-  field mapping.
+Receives a webhook, reshapes the payload, forwards it somewhere else — without
+losing events.
+
+```bash
+HOOK_SECRET=... python3 hookbridge.py \
+    --listen 8080 --forward https://hooks.example.com/inbox \
+    --map "user.email=email" --map "data.id=external_id" \
+    --secret-env HOOK_SECRET
+```
+
+```
+  a escutar em http://127.0.0.1:8080  ->  https://hooks.example.com/inbox
+  fila em hookbridge-queue  |  GET /health para o estado
+```
+
+`{"user":{"email":"a@b.pt"},"data":{"id":7},"noise":"..."}` arrives and
+`{"email":"a@b.pt","external_id":7}` is what leaves. Add `--keep-unmapped` to
+pass the rest through.
+
+### The part that is the whole point
+
+**It accepts fast and delivers slowly.** The twenty-line version forwards while
+the sender is still waiting on the socket — so a slow target makes the sender
+time out and retry, a down target loses the event outright, and a restart loses
+whatever was in flight. This one writes the event to a queue on disk and
+answers `202` in about a millisecond. Stripe and GitHub stop retrying, because
+the event is already safe.
+
+**The queue is a directory, not a variable.** One JSON file per event, written
+to `.tmp` and renamed (atomic, so a reader never sees half a file), moved
+between `pending/` and `failed/` to change state. `kill -9` mid-delivery and
+everything undelivered is still there on the next start. It is also just
+files — when something breaks at 3am you can `cat` the event that broke it.
+
+Verified, not asserted:
+
+```
+  three events accepted while the target returned 503     -> 202, 202, 202
+  kill -9 the bridge                                      -> 3 files in pending/
+  target back up, bridge restarted from scratch           -> 3 delivered, 0 failed
+  {"email": "c1@exemplo.pt", "external_id": 1}
+  {"email": "c2@exemplo.pt", "external_id": 2}
+  {"email": "c3@exemplo.pt", "external_id": 3}
+```
+
+**Retries back off and give up loudly.** 1s, 2s, 4s… to `--max-tries`, then the
+event moves to `failed/` and stays. A 4xx that is not 408 or 429 gives up at
+once — it will not get better by trying again. `--replay` puts everything in
+`failed/` back in the queue once you have fixed the target.
+
+**A missing source field produces no key, never a `null`.** A target that
+receives `"email": null` for an event that simply did not carry one usually
+reads it as *clear the email*, and that is a data-loss bug you find weeks
+later.
+
+**The sender is verified before the body is parsed.** HMAC-SHA256 over the raw
+bytes — not over the re-serialised JSON, whose key order and whitespace differ
+from what was signed — compared with `compare_digest`. Accepts both the bare
+hex digest and the `sha256=…` form. Without `--secret-env` on a public
+interface it warns you, loudly, that you have built somebody else's free relay.
+
+`GET /health` returns pending, failed, delivered and dropped counts.
+
+### What it deliberately does not do
+
+- **Authenticate to the target.** `--forward-header` passes headers through,
+  but OAuth dances and token refresh are a per-API problem, not a generic one.
+- **Transform values.** It moves fields; it does not reformat dates or do
+  arithmetic. Pipe to something else, or see below.
+- **Run as a service for you.** It is a foreground process. `systemd`,
+  `supervisord` or `screen` are better at that than anything this file could
+  contain.
 
 ---
 
