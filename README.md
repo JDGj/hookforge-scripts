@@ -202,15 +202,38 @@ unwind the document, and `<br>` does not swallow the rest of the page. Every
 regex-based scraper works until it meets the first page that disagrees with it
 about attribute order.
 
-**`robots.txt` is fetched with the scraper's own user agent.** This sounds
-like a detail and is not. `urllib.robotparser` fetches with
-`Python-urllib/3.x`; a Cloudflare-fronted site answers *that* with 403; and
-the parser reads 403 as "everything is forbidden". An earlier version of this
-script therefore refused, politely and wrongly, to read sites whose robots.txt
-said `Allow: /` — two of six in a quick sample, including `cloudflare.com`
-itself. ([The measurement and the fix, written
-up.](https://hookforge.dev/blog/robotparser-403-cloudflare.html)) Use
-`--ignore-robots` to override, deliberately.
+**`robots.txt` is handled twice as carefully as you would expect, because
+`urllib.robotparser` gets it wrong in two separate ways.**
+
+*Fetching.* It fetches with `Python-urllib/3.x`; a Cloudflare-fronted site
+answers **that** with 403; and the parser reads 403 as "everything is
+forbidden". An earlier version of this script therefore refused, politely and
+wrongly, to read sites whose robots.txt said `Allow: /` — two of six in a
+quick sample, including `cloudflare.com` itself. ([The measurement and the
+fix, written up.](https://hookforge.dev/blog/robotparser-403-cloudflare.html))
+
+*Matching.* It takes the **first** rule that matches. RFC 9309 says the
+**most specific** one wins and that order carries no meaning at all — so the
+same file gives opposite answers depending on how its lines happen to be
+sorted:
+
+```
+User-agent: *          User-agent: *
+Allow: /public/        Disallow: /
+Disallow: /            Allow: /public/
+
+/public/x -> allowed   /public/x -> DENIED
+```
+
+"Block everything, then open these paths" is one of the commonest shapes a
+real robots.txt takes, and first-match reads it as a total ban. That matters
+more than it sounds: the sites written that way are the ones with a
+deliberate crawling policy, and refusing them refuses the people who took the
+trouble to say yes. This script implements the RFC rule — longest match wins,
+`Allow` wins a tie — plus `*`, `$`, and named user-agent groups beating the
+wildcard one.
+
+Use `--ignore-robots` to override, deliberately.
 
 **Items are matched on tag and class, not on their children.** One card in ten
 carries a "sale" badge, one has no thumbnail, one has a second line. Matching

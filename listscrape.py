@@ -327,36 +327,102 @@ def extract(node, spec, base_url=""):
 
 # ----------------------------------------------------------------- fetching --
 
-def robots_for(base, opener=None):
-    """A RobotFileParser for `base`, fetched with OUR user agent.
+# --------------------------------------------------------------- robots --
+#
+# Our own matcher, because urllib.robotparser answers differently depending on
+# the ORDER of the rules:
+#
+#   Allow: /publico/   then  Disallow: /        -> /publico/x allowed
+#   Disallow: /        then  Allow: /publico/   -> /publico/x DENIED
+#
+# Same rules, same site, opposite answers. RFC 9309 section 2.2.2 says the
+# most specific rule wins -- the longest matching path -- and order carries no
+# meaning at all. The stdlib takes the first match instead, so "block
+# everything, then open these paths", which is one of the most common shapes a
+# real robots.txt takes, reads as a total ban.
+#
+# That matters more than it sounds: the sites written that way are exactly the
+# ones with a deliberate crawling policy, and refusing them is refusing the
+# people who took the trouble to say yes.
 
-    RobotFileParser.read() fetches with urllib's own UA ("Python-urllib/3.x"),
-    and a Cloudflare-fronted site answers that with 403. The parser reads 403
-    as "everything is forbidden" -- correct per the RFC, but the 403 was about
-    the user agent, not about us, and the actual robots.txt said Allow: /.
-    That one detail made an earlier version of this script refuse to read
-    roughly half the web, politely and wrongly.
+def parse_robots(text, agent):
+    """[(path, allowed)] for `agent`, from robots.txt source.
 
-    So the file is fetched here, with the same UA the scrape will use, and
-    only then handed to the parser.
+    Groups are matched by the most specific user-agent that applies: an exact
+    name beats `*`, and a group for somebody else is skipped entirely.
     """
-    rp = urllib.robotparser.RobotFileParser()
-    url = f"{base}/robots.txt"
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    agent = (agent or "*").lower()
+    groups, current, starting = {}, [], True
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        field, _, value = line.partition(":")
+        field, value = field.strip().lower(), value.strip()
+        if field == "user-agent":
+            if not starting:                 # a new group begins
+                current, starting = [], True
+            groups.setdefault(value.lower(), []).extend([])
+            current.append(value.lower())
+        elif field in ("allow", "disallow"):
+            starting = False
+            for name in current or ["*"]:
+                groups.setdefault(name, []).append((value, field == "allow"))
+    # The most specific agent that matches wins; `*` is the fallback.
+    for name in sorted(groups, key=len, reverse=True):
+        if name != "*" and name in agent:
+            return groups[name]
+    return groups.get("*", [])
+
+
+def rule_matches(path, rule):
+    """Does this robots.txt path rule apply to `path`? Handles * and $."""
+    import re as _re
+    if rule == "":
+        return False                          # empty Disallow means "allow all"
+    pattern = "".join(
+        ".*" if ch == "*" else ("$" if ch == "$" else _re.escape(ch))
+        for ch in rule)
+    if not rule.endswith("$"):
+        pattern += ".*"
+    return _re.match(pattern, path) is not None
+
+
+def robots_allows(text, agent, path):
+    """RFC 9309: the longest matching rule wins, and Allow wins a tie."""
+    best_len, best_allow = -1, True
+    for rule, allow in parse_robots(text, agent):
+        if not rule_matches(path, rule):
+            continue
+        weight = len(rule)
+        if weight > best_len or (weight == best_len and allow):
+            best_len, best_allow = weight, allow
+    return best_allow
+
+def robots_for(base, opener=None):
+    """This site's robots.txt as text, or None (no rules) or False (stay out).
+
+    Fetched HERE, with the same user agent the scrape will use.
+    RobotFileParser.read() fetches with urllib's own ("Python-urllib/3.x"), a
+    Cloudflare-fronted site answers that with 403, and the parser reads 403 as
+    "everything is forbidden" -- correct per the RFC, but the 403 was about the
+    user agent, not about us, and the file itself said Allow: /. That one
+    detail made an earlier version of this script refuse, politely and
+    wrongly, to read sites that welcomed it.
+
+    Three answers and not two, because "no rules" and "keep out" are different
+    facts and a caller that cannot tell them apart will get one of them wrong.
+    """
+    req = urllib.request.Request(f"{base}/robots.txt", headers={"User-Agent": UA})
     try:
         with (opener or urllib.request.urlopen)(req, timeout=15) as r:
-            body = r.read().decode("utf-8", "replace")
+            return r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        # 401/403 really do mean "stay out" (RFC 9309 §2.3.1.3); 404 and the
+        # 401/403 really do mean "stay out" (RFC 9309 2.3.1.3); 404 and the
         # rest mean there are no rules to obey.
-        rp.disallow_all = e.code in (401, 403)
-        rp.allow_all = not rp.disallow_all
-        return rp
+        return False if e.code in (401, 403) else None
     except Exception:
-        rp.allow_all = True
-        return rp
-    rp.parse(body.splitlines())
-    return rp
+        return None                           # unreachable is not a refusal
 
 
 def allowed(url, ignore=False, opener=None):
@@ -368,7 +434,12 @@ def allowed(url, ignore=False, opener=None):
     parts = urllib.parse.urlparse(url)
     if parts.scheme not in ("http", "https"):
         return True
-    return robots_for(f"{parts.scheme}://{parts.netloc}", opener).can_fetch(UA, url)
+    text = robots_for(f"{parts.scheme}://{parts.netloc}", opener)
+    if text is None:
+        return True                           # no rules to obey
+    if text is False:
+        return False                          # robots.txt itself was refused
+    return robots_allows(text, UA, parts.path or "/")
 
 
 def fetch(url, timeout=30):
@@ -664,6 +735,45 @@ def selftest():
 
     # robots.txt on a local file is not consulted at all.
     assert allowed("page.html") is True
+
+    # The rules themselves, RFC 9309 rather than first-match. This is the
+    # second robotparser bug in this file's history and the quieter one: the
+    # stdlib takes the FIRST matching rule, so the same robots.txt gives
+    # opposite answers depending on the order its lines happen to be in.
+    before = "User-agent: *\nAllow: /publico/\nDisallow: /\n"
+    after = "User-agent: *\nDisallow: /\nAllow: /publico/\n"
+    for txt in (before, after):
+        assert robots_allows(txt, UA, "/publico/x") is True, txt
+        assert robots_allows(txt, UA, "/outro") is False, txt
+    # "block everything, then open these paths" is one of the commonest shapes
+    # a real robots.txt takes, and first-match reads it as a total ban.
+    import urllib.robotparser as _rp
+    _p = _rp.RobotFileParser(); _p.parse(after.splitlines())
+    assert _p.can_fetch(UA, "https://x.pt/publico/x") is False, \
+        "se a stdlib deixar de errar isto, este matcher deixa de ser preciso"
+
+    # The longest rule wins, and Allow wins a tie.
+    assert robots_allows("User-agent: *\nDisallow: /a/\nAllow: /a/b/\n", UA, "/a/b/c")
+    assert not robots_allows("User-agent: *\nAllow: /a/\nDisallow: /a/b/\n", UA, "/a/b/c")
+    assert robots_allows("User-agent: *\nAllow: /x\nDisallow: /x\n", UA, "/x"), "empate: Allow"
+
+    # A named group beats the wildcard one, and somebody else's group is not ours.
+    named = "User-agent: *\nDisallow: /\n\nUser-agent: listscrape\nAllow: /\n"
+    assert robots_allows(named, "listscrape/1.0", "/x") is True
+    assert robots_allows(named, "outro-bot", "/x") is False
+
+    # Wildcards and end-anchors.
+    pdf = "User-agent: *\nDisallow: /*.pdf$\nAllow: /\n"
+    assert robots_allows(pdf, UA, "/a.pdf") is False
+    assert robots_allows(pdf, UA, "/a.html") is True
+    assert robots_allows(pdf, UA, "/a.pdf.txt") is True, "$ ancora mesmo no fim"
+
+    # An empty Disallow is the documented way to say "allow everything".
+    assert robots_allows("User-agent: *\nDisallow:\n", UA, "/seja-o-que-for")
+    # Comments and blank lines are not rules.
+    assert robots_allows("# nada\nUser-agent: *\n\nAllow: /\n", UA, "/x")
+    # And no robots.txt at all is no rules, not a ban.
+    assert robots_allows("", UA, "/x") is True
 
     # robots.txt, without touching the network. The 403 case is the one that
     # matters: it must come from the FILE saying so, never from a CDN refusing
