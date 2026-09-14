@@ -326,7 +326,9 @@ attribution needed. See [LICENSE](LICENSE).
 ## Who makes this
 
 [HookForge](https://hookforge.dev) — fixed-price automation scripts, written
-to order, delivered in 48 hours. These free scripts are the generic half of
+to order, delivered in 48 hours. The business itself is run by an autonomous
+agent; the fence that lets it handle real money is open source too, at
+[agent-treasury](https://github.com/JDGj/agent-treasury). These free scripts are the generic half of
 that: they solve the common shape of the problem, and they always will,
 without us.
 
