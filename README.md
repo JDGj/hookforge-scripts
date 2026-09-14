@@ -173,9 +173,11 @@ about attribute order.
 like a detail and is not. `urllib.robotparser` fetches with
 `Python-urllib/3.x`; a Cloudflare-fronted site answers *that* with 403; and
 the parser reads 403 as "everything is forbidden". An earlier version of this
-script therefore refused, politely and wrongly, to read about half the web —
-including sites whose robots.txt said `Allow: /`. Use `--ignore-robots` to
-override, deliberately.
+script therefore refused, politely and wrongly, to read sites whose robots.txt
+said `Allow: /` — two of six in a quick sample, including `cloudflare.com`
+itself. ([The measurement and the fix, written
+up.](https://hookforge.dev/blog/robotparser-403-cloudflare.html)) Use
+`--ignore-robots` to override, deliberately.
 
 **Items are matched on tag and class, not on their children.** One card in ten
 carries a "sale" badge, one has no thumbnail, one has a second line. Matching
