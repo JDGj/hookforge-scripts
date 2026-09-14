@@ -229,9 +229,14 @@ Disallow: /            Allow: /public/
 real robots.txt takes, and first-match reads it as a total ban. That matters
 more than it sounds: the sites written that way are the ones with a
 deliberate crawling policy, and refusing them refuses the people who took the
-trouble to say yes. This script implements the RFC rule — longest match wins,
-`Allow` wins a tie — plus `*`, `$`, and named user-agent groups beating the
-wildcard one.
+trouble to say yes.
+
+Measured, because it is being fixed as this is written: **3.9.25, 3.11.16 and
+3.13.5 all deny that second case; 3.13.15 allows it.** So the fix landed in a
+recent 3.13 patch and most installed Pythons still have the bug. This script
+implements the RFC rule itself — longest match wins, `Allow` wins a tie — plus
+`*`, `$`, and named user-agent groups beating the wildcard one, so its answer
+does not depend on which patch release you happen to be on.
 
 Use `--ignore-robots` to override, deliberately.
 

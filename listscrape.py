@@ -747,10 +747,21 @@ def selftest():
         assert robots_allows(txt, UA, "/outro") is False, txt
     # "block everything, then open these paths" is one of the commonest shapes
     # a real robots.txt takes, and first-match reads it as a total ban.
+    #
+    # The stdlib's own answer is OBSERVED here, never required. An earlier
+    # version asserted it was still wrong, and CI went red the day it stopped
+    # being: 3.9.25, 3.11.16 and 3.13.5 all deny this, 3.13.15 allows it, so
+    # the fix landed in a recent 3.13 patch. Pinning a bug in somebody else's
+    # library is pinning something you do not control -- what this file
+    # promises is its own answer, on every version.
     import urllib.robotparser as _rp
     _p = _rp.RobotFileParser(); _p.parse(after.splitlines())
-    assert _p.can_fetch(UA, "https://x.pt/publico/x") is False, \
-        "se a stdlib deixar de errar isto, este matcher deixa de ser preciso"
+    stdlib_agrees = _p.can_fetch(UA, "https://x.pt/publico/x")
+    assert robots_allows(after, UA, "/publico/x") is True, \
+        "o nosso tem de acertar, concorde a stdlib ou nao"
+    if not stdlib_agrees:
+        # Still the majority of installed Pythons, which is why this exists.
+        assert robots_allows(before, UA, "/publico/x") is True
 
     # The longest rule wins, and Allow wins a tie.
     assert robots_allows("User-agent: *\nDisallow: /a/\nAllow: /a/b/\n", UA, "/a/b/c")
