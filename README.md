@@ -9,6 +9,11 @@ curl -O https://raw.githubusercontent.com/JDGj/hookforge-scripts/main/csvclean.p
 python3 csvclean.py messy.csv --report
 ```
 
+| | |
+|---|---|
+| [`csvclean.py`](#csvcleanpy) | Clean a messy CSV or Excel export |
+| [`listscrape.py`](#listscrapepy) | Pull a repeated list off a page into CSV |
+
 ---
 
 ## csvclean.py
@@ -122,16 +127,82 @@ runs the test suite — no network, no files, about a second.
 
 ---
 
+## listscrape.py
+
+Pulls a repeated list — products, listings, contacts, search results — off a
+page into CSV.
+
+```bash
+# tell it what an item is, and what you want from each one
+python3 listscrape.py https://example.com/shop \
+    --select ".product" \
+    --field "name=h3" --field "price=.price" --field "url=a@href"
+```
+
+```
+  https://example.com/shop: 3 item(s), 3 coluna(s)
+name,price,url
+Data Cleanup Script,49€ one-time,https://example.com/p/clean
+Website Scraper,79€ one-time,https://example.com/p/scrape
+API / Webhook Bridge,99€ one-time,https://example.com/p/bridge
+```
+
+`--auto` guesses the repeating block and the columns, which is useful for a
+first look at an unfamiliar page:
+
+```bash
+python3 listscrape.py https://example.com/shop --auto --explain
+```
+
+**`--auto` is a guess, and says so.** It picks the largest, most uniform
+repeating block — on a page whose FAQ has seven entries and whose shop has
+three products, it will pick the FAQ, and it is not wrong to. When you know
+what you want, `--select` is the answer; `--auto` is for finding out what is
+there.
+
+### The parts that are easy to get wrong
+
+**It is a DOM, not a regex.** `<a class="x" href="y">` and
+`<a href="y" class="x">` are the same element, an unmatched `</div>` does not
+unwind the document, and `<br>` does not swallow the rest of the page. Every
+regex-based scraper works until it meets the first page that disagrees with it
+about attribute order.
+
+**`robots.txt` is fetched with the scraper's own user agent.** This sounds
+like a detail and is not. `urllib.robotparser` fetches with
+`Python-urllib/3.x`; a Cloudflare-fronted site answers *that* with 403; and
+the parser reads 403 as "everything is forbidden". An earlier version of this
+script therefore refused, politely and wrongly, to read about half the web —
+including sites whose robots.txt said `Allow: /`. Use `--ignore-robots` to
+override, deliberately.
+
+**Items are matched on tag and class, not on their children.** One card in ten
+carries a "sale" badge, one has no thumbnail, one has a second line. Matching
+on child structure splits those into groups of one and finds no list at all.
+
+**Blocks are scored on sameness, not size.** A container always holds more
+text than the things inside it — by construction, not by being more list-like
+— so scoring on volume reliably picks the wrapper. Uniformity of item size and
+depth of position are what actually distinguish a list.
+
+**One request at a time, with a delay** (`--delay`, default 1s).
+
+### What it deliberately does not do
+
+- **JavaScript.** A list drawn client-side is invisible to anything built on
+  the standard library. It says so on stderr instead of writing an empty CSV
+  and letting you think the page was empty.
+- **Full CSS selectors.** `tag`, `.class`, `#id`, and descendants
+  (`.list .item`). `>`, `:nth-child` and friends raise an error rather than
+  silently matching nothing.
+- **Logins, sessions, or anything a site put behind a wall.**
+
+---
+
 ## Coming next
 
-- `listscrape.py` — pull a repeated list (prices, listings, contacts) off a
-  page into CSV, standard library only.
 - `hookbridge.py` — receive a webhook and forward it somewhere else, with
   field mapping.
-
-Both exist as working sketches today; they are not here yet because they are
-not yet as careful as the one above. Watch the repo, or open an issue if you
-want one sooner.
 
 ---
 
