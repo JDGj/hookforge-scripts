@@ -157,11 +157,19 @@ first look at an unfamiliar page:
 python3 listscrape.py https://example.com/shop --auto --explain
 ```
 
-**`--auto` is a guess, and says so.** It picks the largest, most uniform
-repeating block — on a page whose FAQ has seven entries and whose shop has
-three products, it will pick the FAQ, and it is not wrong to. When you know
-what you want, `--select` is the answer; `--auto` is for finding out what is
-there.
+**`--auto` is a guess, and says so.** It scores candidate blocks on five
+things — how many items, how much text (capped), how *alike* those items are
+in size, whether they link out, and whether they have fields rather than being
+repeated prose. On a page with no list at all it still returns its best
+candidate, but it says on stderr that the candidate looks like prose:
+
+```
+  https://example.com/about: o melhor candidato parece prosa, nao uma lista
+  (itens sem campos). Confirma com --explain, ou usa --select se sabes o que queres.
+```
+
+When you know what you want, `--select` is the answer; `--auto` is for finding
+out what is there.
 
 ### The parts that are easy to get wrong
 
@@ -187,8 +195,14 @@ on child structure splits those into groups of one and finds no list at all.
 
 **Blocks are scored on sameness, not size.** A container always holds more
 text than the things inside it — by construction, not by being more list-like
-— so scoring on volume reliably picks the wrapper. Uniformity of item size and
-depth of position are what actually distinguish a list.
+— so scoring on volume reliably picks the wrapper.
+
+**And on having fields.** Measured across a real site: the genuine lists scored
+316 and 254 with a median of 5 and 2 child elements per item; three prose pages
+scored 17, 36 and **264** with a median of zero. Score alone would have let an
+article's paragraphs out-rank a product grid — a record has fields, a paragraph
+is text, and that one number separates them where nothing else does. It is a
+penalty and not a veto, because `<li>Alpha</li><li>Beta</li>` is a list too.
 
 **One request at a time, with a delay** (`--delay`, default 1s).
 

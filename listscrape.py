@@ -231,8 +231,39 @@ def find_repeats(root, min_items=3):
             # construction, never by being more list-like. Sameness of size and
             # specificity of position are the strong signals, so they are the
             # ones allowed to dominate.
+            #
+            # Two more, added after watching this pick a page's FAQ over its
+            # product grid. Both were right to be called lists; only one is
+            # what somebody running a scraper meant.
+            #
+            #   Items that link out. A product card, a search result, a job
+            #   ad, a classified -- each points somewhere. Seven <details> in
+            #   an FAQ point nowhere. This is a bonus and not a requirement,
+            #   because a table of figures is still a list.
+            #
+            #   Items with internal structure. The product cards on that page
+            #   had seven distinct descendant tags each (heading, price, list,
+            #   link); the FAQ entries had two. Repeated prose is flat;
+            #   records have fields.
+            #   Items with fields. A record has sub-elements; a paragraph of
+            #   prose has none. Measured across this site's own pages, that
+            #   one number separates them where nothing else does: the real
+            #   lists scored 316 and 254 with a median of 5 and 2 child
+            #   elements per item, and three prose pages scored 17, 36 and
+            #   264 with a median of ZERO. Score alone would have let an
+            #   article's paragraphs out-rank a product grid. A penalty and
+            #   not a veto, because <li>Alpha</li><li>Beta</li> is a list too.
+            linked = sum(1 for c in group
+                         if any(d.tag == "a" and d.attrs.get("href")
+                                for d in c.walk()))
+            link_factor = 1 + 0.6 * (linked / len(group))
+            tags = len({d.tag for c in group for d in c.walk() if d is not c})
+            structure = min(tags, 6) / 3.0
+            kids = sorted(len(c.children) for c in group)[len(group) // 2]
+            fields = 1.0 if kids >= 2 else (0.7 if kids == 1 else 0.35)
             score = (len(group) * min(mean, 600.0) ** 0.5 * uniformity ** 2
-                     * (1 + node.depth() * 0.3))
+                     * (1 + node.depth() * 0.3) * link_factor * structure
+                     * fields)
             if score > best_score:
                 best, best_score = group, score
     return best
@@ -408,6 +439,15 @@ def scrape_one(markup, args, base_url=""):
     return [n for n, _ in fields], rows
 
 
+
+def looks_like_records(markup, args):
+    """Whether --auto's pick has fields, rather than being repeated prose."""
+    items = find_repeats(parse(markup), args.min_items)
+    if not items:
+        return True
+    return sorted(len(c.children) for c in items)[len(items) // 2] >= 1
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     header, all_rows = None, []
@@ -426,6 +466,13 @@ def main(argv=None):
             continue
 
         h, rows = scrape_one(markup, args, url if "://" in url else "")
+        if args.auto and rows and not looks_like_records(markup, args):
+            # Said out loud rather than returned quietly: --auto always returns
+            # its best candidate, and on a page with no list at all the best
+            # candidate is the prose.
+            print(f"  {url}: o melhor candidato parece prosa, nao uma lista "
+                  f"(itens sem campos). Confirma com --explain, ou usa "
+                  f"--select se sabes o que queres.", file=sys.stderr)
         if not rows:
             # Said out loud, because an empty CSV looks like "nothing there"
             # when it usually means "the list is drawn by JavaScript".
@@ -514,12 +561,23 @@ def selftest():
     assert not any(n.tag == "a" for n in found)
 
     # And it prefers the cards over the section that wraps them, even though
-    # the section contains strictly more text. Uniformity, not volume.
+    # the section contains strictly more text.
+    #
+    # The cards here carry a heading and a link, because that is what a card
+    # is. An earlier version of this fixture used bare <div>s of prose, and
+    # when the link and structure signals were added it started preferring the
+    # sections -- correctly, as it turns out: three identical blocks of text
+    # with no heading, no link and no fields are not obviously more of a list
+    # than the three sections around them, and a scraper has no honest reason
+    # to pick one. The fixture was unrealistic, not the scorer.
     wrapped = parse("""<body><section class="s"><h2>Um titulo</h2>
       <div class="grid">
-        <div class="card">Alpha, um produto com uma descricao normal aqui</div>
-        <div class="card">Beta, outro produto com descricao de tamanho igual</div>
-        <div class="card">Gama, terceiro produto com texto tambem parecido</div>
+        <div class="card"><h3>Alpha</h3><span class="p">10 EUR</span>
+          <a href="/a">ver</a></div>
+        <div class="card"><h3>Beta</h3><span class="p">20 EUR</span>
+          <a href="/b">ver</a></div>
+        <div class="card"><h3>Gama</h3><span class="p">30 EUR</span>
+          <a href="/c">ver</a></div>
       </div></section>
       <section class="s"><h2>Outro</h2><p>Uma seccao muito mais curta.</p></section>
       <section class="s"><h2>Terceiro</h2><p>E outra ainda, de outro tamanho
@@ -528,6 +586,45 @@ def selftest():
       </body>""")
     picked = find_repeats(wrapped)
     assert picked and all("card" in n.classes for n in picked), picked
+
+    # A small bench of page shapes, because two signals added to fix one page
+    # is how a heuristic gets tuned into something that only works on that
+    # page. Each of these says what it expects and why.
+    def shaped(html, want, why):
+        got = find_repeats(parse(html))
+        assert got, f"{why}: nao encontrou nada"
+        classes = [c for n in got for c in (n.classes or {n.tag})]
+        assert any(want in c for c in classes), f"{why}: escolheu {got[:3]}"
+
+    # A nav of links must never beat the results below it: links, but no text.
+    shaped("""<body><nav><a href="/1">Um</a><a href="/2">Dois</a>
+        <a href="/3">Tres</a><a href="/4">Quatro</a></nav>
+      <div class="results">
+        <div class="res"><h3>Primeiro resultado</h3><p>Uma descricao com
+          tamanho normal de resultado de pesquisa.</p><a href="/r1">abrir</a></div>
+        <div class="res"><h3>Segundo resultado</h3><p>Outra descricao com
+          tamanho parecido com a anterior aqui.</p><a href="/r2">abrir</a></div>
+        <div class="res"><h3>Terceiro resultado</h3><p>E a terceira, tambem
+          do mesmo tamanho aproximado que as outras.</p><a href="/r3">abrir</a></div>
+      </div></body>""", "res", "nav vs resultados")
+
+    # When the FAQ is the only list on the page, the FAQ is the answer.
+    shaped("""<body><main><h1>Perguntas</h1>
+        <details class="q"><summary>Primeira pergunta aqui</summary>
+          <p>Uma resposta com algum tamanho, como as respostas tem.</p></details>
+        <details class="q"><summary>Segunda pergunta aqui</summary>
+          <p>Outra resposta de tamanho semelhante a primeira.</p></details>
+        <details class="q"><summary>Terceira pergunta</summary>
+          <p>E a terceira resposta, tambem parecida em tamanho.</p></details>
+      </main></body>""", "q", "FAQ sozinha na pagina")
+
+    # Table rows are a list even though nothing in them links anywhere.
+    shaped("""<body><table><tbody>
+        <tr class="r"><td>Lisboa</td><td>545923</td><td>2026-01-01</td></tr>
+        <tr class="r"><td>Porto</td><td>231962</td><td>2026-01-01</td></tr>
+        <tr class="r"><td>Braga</td><td>193333</td><td>2026-01-01</td></tr>
+        <tr class="r"><td>Coimbra</td><td>140796</td><td>2026-01-01</td></tr>
+      </tbody></table></body>""", "r", "linhas de tabela sem links")
 
     # Extraction, including attributes and URL joining.
     p0 = prods[0]
