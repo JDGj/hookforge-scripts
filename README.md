@@ -98,6 +98,29 @@ semicolons, and a comma inside `"Lisboa, Portugal"` must not get a vote.
 **Ragged rows are repaired, not dropped.** A row missing one trailing field is
 almost always still the row you wanted.
 
+**`.xlsx` is read directly, with no dependency.** It is a zip of XML, and
+`zipfile` and `xml.etree` are both standard library — so "save it as CSV
+first" was never a real limitation, just an unwritten reader. It matters
+because these files arrive as Excel attachments far more often than as CSV,
+and the save-as step is exactly where a non-technical sender introduces the
+encoding and delimiter problems the rest of this script spends its time
+undoing.
+
+```bash
+python3 csvclean.py vendas.xlsx -o limpo.csv --all
+```
+
+Dates come back as dates, which is the part that needs care: Excel stores
+`2025-09-14` as the number `45914` and only `styles.xml` says which numbers
+are dates. It also believes 1900 was a leap year, so serial 60 is a day that
+never existed and everything after it is shifted by one — handled, and
+tested. Shared strings, inline strings, booleans, cached formula errors and
+missing cells (Excel omits an empty cell rather than writing a blank one) are
+all handled too.
+
+Verified once against a real 700-row workbook out of Excel, and the fixtures
+in `--selftest` cover the traps that file did not contain.
+
 ### Everything it does
 
 | Flag | What it does |
@@ -120,9 +143,9 @@ runs the test suite — no network, no files, about a second.
 
 ### What it deliberately does not do
 
-- **Excel files directly.** `.xlsx` is a zip of XML and reading it properly
-  needs a library, which would break the no-dependencies promise. Save as CSV
-  first.
+- **Excel files with formatting, formulas or macros.** `.xlsx` is read (see
+  below), but only its values: a formula comes back as its cached result,
+  and colours, merged cells, charts and macros are ignored.
 - **Fuzzy matching.** "Ana Silva" and "Ana Sliva" stay two people. Guessing
   which near-duplicates are the same person is a judgement call, and a script
   that makes it for you will one day merge two real customers.
